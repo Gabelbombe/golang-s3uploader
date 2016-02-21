@@ -1,7 +1,8 @@
 package main
 
 /**
- *
+ * CPR : Jd Daniel :: Ehime-ken
+ * MOD : 2016-02-21 @ 09:50:31
  *
  * REF : https://www.socketloop.com/tutorials/golang-download-file-example
  * REF : http://golang.org/pkg/io/#Copy
