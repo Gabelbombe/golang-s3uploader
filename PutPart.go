@@ -1,121 +1,116 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
-	"github.com/mitchellh/goamz/aws"
-	"github.com/mitchellh/goamz/s3"
-	"flag"
-	"math"
-	"net/http"
-	"os"
+  "bufio"
+  "fmt"
+  "github.com/mitchellh/goamz/aws"
+  "github.com/mitchellh/goamz/s3"
+  "flag"
+  "math"
+  "net/http"
+  "os"
 )
 
 // note, that variables are pointers
 var awsKey = flag.String("long-string", "", "Description")
 
 func init() {
-    flag.StringVar(awsKey, "k", "key", "Description")
+  flag.StringVar(awsKey, "k", "key", "Description")
 }
 
 func main() {
-
-	flag.Parse()
-
+  flag.Parse()
   println(*awsKey)
 
+  AWSAuth := aws.Auth{
+    AccessKey: "", // change this to yours
+    SecretKey: "",
+  }
+
+  region := aws.USEast
+  // change this to your AWS region
+  // click on the bucketname in AWS control panel and click Properties
+  // the region for your bucket should be under "Static Website Hosting" tab
+
+  connection := s3.New(AWSAuth, region)
 
 
+  /**
+   * TODO: Will be replaced with stdin later
+   */
 
-	AWSAuth := aws.Auth{
-		AccessKey: "", // change this to yours
-		SecretKey: "",
-	}
+  bucket := connection.Bucket("")     // change this your bucket name
+  s3path := "example/somebigfile"     // this is the target file and location in S3
+  fileToBeUploaded := "somebigfile"   // AWS recommends multipart upload for file bigger than 100MB
 
-	region := aws.USEast
-	// change this to your AWS region
-	// click on the bucketname in AWS control panel and click Properties
-	// the region for your bucket should be under "Static Website Hosting" tab
+  /**
+   * NOTE: If the filesize is smaller than 5MB ( as defined in fileChunk below) you will get this error message:
+   * -->   The XML you provided was not well-formed or did not validate against our published schema
+   */
 
-	connection := s3.New(AWSAuth, region)
+  file, err := os.Open(fileToBeUploaded)
 
+  if err != nil {
+    fmt.Println(err)
+    os.Exit(1)
+  }
 
-	/**
-	 * TODO: Will be replaced with stdin later
-	 */
+  defer file.Close()
 
-	bucket := connection.Bucket("") 		// change this your bucket name
-	s3path := "example/somebigfile" 		// this is the target file and location in S3
-	fileToBeUploaded := "somebigfile" 	// AWS recommends multipart upload for file bigger than 100MB
+  fileInfo, _ := file.Stat()
+  var fileSize int64 = fileInfo.Size()
+  bytes := make([]byte, fileSize)
 
-	/**
-	 * NOTE: If the filesize is smaller than 5MB ( as defined in fileChunk below) you will get this error message:
-	 * -->   The XML you provided was not well-formed or did not validate against our published schema
-	 */
+  // read into buffer
+  buffer := bufio.NewReader(file)
+  _, err = buffer.Read(bytes)
 
-	file, err := os.Open(fileToBeUploaded)
+  // then we need to determine the file type
+  filetype := http.DetectContentType(bytes)
 
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
+  // set up for multipart upload
+  multi, err := bucket.InitMulti(s3path, filetype, s3.ACL("public-read"))
 
-	defer file.Close()
+  if err != nil {
+    fmt.Println(err)
+    os.Exit(1)
+  }
 
-	fileInfo, _ := file.Stat()
-	var fileSize int64 = fileInfo.Size()
-	bytes := make([]byte, fileSize)
+  // this is for PutPart ( see https://godoc.org/launchpad.net/goamz/s3#Multi.PutPart)
 
-	// read into buffer
-	buffer := bufio.NewReader(file)
-	_, err = buffer.Read(bytes)
+  // calculate the number of parts by dividing up the file size by 5MB
+  const fileChunk = 5242880 // 5MB in bytes
 
-	// then we need to determine the file type
-	filetype := http.DetectContentType(bytes)
+  // how many parts to process ??
+  totalPartsNum := uint64(math.Ceil(float64(fileSize) / float64(fileChunk)))
 
-	// set up for multipart upload
-	multi, err := bucket.InitMulti(s3path, filetype, s3.ACL("public-read"))
+  parts := []s3.Part{} // collect all the parts for upload completion
 
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
+  fmt.Println("Uploading...")
 
-	// this is for PutPart ( see https://godoc.org/launchpad.net/goamz/s3#Multi.PutPart)
+  for i := uint64(1); i < totalPartsNum; i++ {
 
-	// calculate the number of parts by dividing up the file size by 5MB
-	const fileChunk = 5242880 // 5MB in bytes
+    partSize := int(math.Min(fileChunk, float64(fileSize-int64(i*fileChunk))))
+    partBuffer := make([]byte, partSize)
 
-	// how many parts to process ??
-	totalPartsNum := uint64(math.Ceil(float64(fileSize) / float64(fileChunk)))
+    file.Read(partBuffer)
+    part, err := multi.PutPart(int(i), file) // write to S3 bucket part by part
+    fmt.Printf("Sending %d part of %d and uploaded %d bytes.\n ", int(i), int(totalPartsNum), int(part.Size))
 
-	parts := []s3.Part{} // collect all the parts for upload completion
+    parts = append(parts, part)
 
-	fmt.Println("Uploading...")
+    if err != nil {
+      fmt.Printf("Uploading parts of file error :i %s\n ", err)
+      os.Exit(1)
+    }
+  }
 
-	for i := uint64(1); i < totalPartsNum; i++ {
+  err = multi.Complete(parts)
 
-		partSize := int(math.Min(fileChunk, float64(fileSize-int64(i*fileChunk))))
-		partBuffer := make([]byte, partSize)
+  if err != nil {
+    fmt.Println("Complete parts error %s\n", err)
+    os.Exit(1)
+  }
 
-		file.Read(partBuffer)
-		part, err := multi.PutPart(int(i), file) // write to S3 bucket part by part
-		fmt.Printf("Sending %d part of %d and uploaded %d bytes.\n ", int(i), int(totalPartsNum), int(part.Size))
-
-		parts = append(parts, part)
-
-		if err != nil {
-			fmt.Printf("Uploading parts of file error :i %s\n ", err)
-			os.Exit(1)
-		}
-	}
-
-	err = multi.Complete(parts)
-
-	if err != nil {
-		fmt.Println("Complete parts error %s\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("\n\nPutPart upload completed")
+  fmt.Println("\n\nPutPart upload completed")
 }
